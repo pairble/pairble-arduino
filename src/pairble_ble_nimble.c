@@ -1,7 +1,11 @@
-/* protocomm's BLE transport on NimBLE-Arduino, for the original ESP32 under
- * Arduino (see arduino/build.sh). ESP-IDF b774170ff46, components/protocomm/
+/* protocomm's BLE transport on NimBLE-Arduino, for every chip under Arduino
+ * (see arduino/build.sh). ESP-IDF b774170ff46, components/protocomm/
  * src/transports/protocomm_nimble.c, Apache-2.0, with NimBLE-Arduino's include
  * paths. Generated - do not edit. */
+#include "esp_idf_version.h"
+#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 5, 0)
+#error "pairble needs arduino-esp32 3.3 or newer: this transport is ESP-IDF 5.5's, and uses its private protocomm structures"
+#endif
 #include "nimconfig.h"
 #include "esp_err.h"
 /* ESP-IDF's NimBLE config has it; NimBLE-Arduino's does not, and without it
