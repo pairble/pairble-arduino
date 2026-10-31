@@ -1,283 +1,45 @@
 /*
- * pairble - Wi-Fi onboarding for ESP32 over BLE, with nothing to install
+ * pairble for Arduino: one library for the ESP32 (arduino-esp32 3.3+) and the
+ * Raspberry Pi Pico W / Pico 2 W (arduino-pico). This picks the header of the
+ * board being built for:
+ *
+ *   pairble_esp32.h    the ESP-IDF component's own header, unchanged
+ *   pairble_rp2040.h   the Pico W's, with the same API less what has no
+ *                      counterpart there
+ *
+ * Both have the same events, configuration struct, pairble_start(),
+ * pairble_setup_url() and the rest, so one sketch builds for both. Two names
+ * bridge what differs: pairble_loop(), which the Pico W needs from loop() and
+ * the ESP32 (with a task of its own) ignores, and the PAIRBLE_OK /
+ * PAIRBLE_ERR_* return codes, which are esp_err_t codes on the ESP32.
  *
  * SPDX-License-Identifier: Apache-2.0
- *
- * The whole integration:
- *
- *     ESP_ERROR_CHECK(pairble_start(NULL));
- *     ESP_LOGI(TAG, "setup: %s", pairble_setup_url());
- *
- * pairble_start() connects with stored credentials if there are any and
- * otherwise opens setup; pairble_setup_url() is what goes into the QR code.
- *
- * When the stored network stops working, setup reopens by itself after
- * CONFIG_PAIRBLE_RECOVERY_AFTER_SECONDS offline, on a long press of
- * CONFIG_PAIRBLE_SETUP_BUTTON_GPIO, after CONFIG_PAIRBLE_POWER_CYCLE_COUNT
- * quick power cycles, or when the application calls pairble_open_setup().
- * None of these erases anything: the stored network keeps being retried and
- * is replaced only once the device has joined a new one.
  */
 #pragma once
 
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
-#include "esp_err.h"
-#include "sdkconfig.h"
-#if __has_include("pairble_arduino_config.h")
-#include "pairble_arduino_config.h"  /* the Arduino library: menuconfig defaults */
-#endif
+#if defined(ESP_PLATFORM)
+#  include "pairble_esp32.h"
+#  include "esp_wifi.h"  /* the ESP_ERR_WIFI_* codes below */
 
-/*
- * BLE is mandatory (design decision R1). A target without Bluetooth must fail
- * here rather than silently degrade to a SoftAP-only product.
- *
- * The check is on the SoC capability, not on a hand-maintained chip list:
- * ESP32-C2 does have BLE 5.3 despite what some third-party libraries claim,
- * and ESP32-S2 is the only current target with no Bluetooth at all.
- */
-#include "soc/soc_caps.h"
-#if !SOC_BLE_SUPPORTED
-#  error "pairble: this target has no Bluetooth LE. Supported: ESP32, C2, C3, C5, C6, S3. ESP32-S2 is not supported."
-#endif
-#if !defined(CONFIG_BT_ENABLED)
-#  error "pairble: enable Bluetooth in menuconfig (Component config > Bluetooth)."
-#endif
+typedef esp_err_t pairble_err_t;
+#  define PAIRBLE_OK                  ESP_OK
+#  define PAIRBLE_ERR_INVALID_ARG     ESP_ERR_INVALID_ARG
+#  define PAIRBLE_ERR_INVALID_STATE   ESP_ERR_INVALID_STATE
+#  define PAIRBLE_ERR_NO_MEM          ESP_ERR_NO_MEM
+#  define PAIRBLE_ERR_WRONG_PASSWORD  ESP_ERR_WIFI_PASSWORD
+#  define PAIRBLE_ERR_NOT_FOUND       ESP_ERR_WIFI_SSID
+#  define PAIRBLE_ERR_TIMEOUT         ESP_ERR_TIMEOUT
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+/* pairble runs in its own task on the ESP32: nothing to do. */
+static inline void pairble_loop(void) {}
 
-/** Longest name BLE advertising allows in ESP-IDF (MAX_BLE_DEVNAME_LEN). */
-#define PAIRBLE_NAME_MAX_LEN 29
+#elif defined(ARDUINO_ARCH_RP2040)
+#  if !defined(PICO_CYW43_SUPPORTED)
+#    error "pairble needs a board with the CYW43 radio: the Raspberry Pi Pico W, Pico 2 W or similar"
+#  else
+#    include "pairble_rp2040.h"
+#  endif
 
-typedef enum {
-    PAIRBLE_EVENT_STARTED,              /* setup open, waiting for a phone; with
-                                           pairble_is_provisioned() true it was
-                                           reopened and the old network is kept */
-    PAIRBLE_EVENT_CREDENTIALS_RECEIVED, /* a phone sent a network to try         */
-    PAIRBLE_EVENT_SUCCESS,              /* joined it; the phone has been told    */
-    PAIRBLE_EVENT_FAILED,               /* a phone's network did not work: wrong
-                                           password, not found, or connection
-                                           failed; the phone may try again        */
-    PAIRBLE_EVENT_STOPPED,              /* setup torn down, RAM released         */
-    PAIRBLE_EVENT_ONLINE,               /* has an IP, provisioned or not         */
-    PAIRBLE_EVENT_OFFLINE,              /* lost or cannot reach the stored network;
-                                           reason says why. Retried with backoff;
-                                           emitted again only if the reason changes.
-                                           Also when manually opened setup lets go
-                                           of the network for a phone            */
-} pairble_event_t;
-
-typedef enum {
-    PAIRBLE_FAIL_NONE = 0,
-    PAIRBLE_FAIL_WRONG_PASSWORD,
-    PAIRBLE_FAIL_AP_NOT_FOUND,
-    PAIRBLE_FAIL_CONNECTION_LOST,       /* anything else: weak signal, an AP whose
-                                           security the device will not use      */
-} pairble_fail_reason_t;
-
-/* Called from the default event loop task. Keep it short. */
-typedef void (*pairble_event_cb_t)(pairble_event_t event,
-                                  pairble_fail_reason_t reason,
-                                  void *user_ctx);
-
-/* Every field is optional: pairble_start(NULL) uses the defaults. Start from
- * PAIRBLE_CONFIG_DEFAULT() rather than a zeroed struct, in which softap,
- * reboot_after_success and recovery_after_seconds are all off. */
-typedef struct {
-    /* The advertised name, exactly. NULL (the default) builds one from
-     * `name_prefix` and the last three bytes of the MAC, so every unit is
-     * distinct - which matters, because the iPhone app finds the device by
-     * exact name and would otherwise find a neighbour's. Set a fixed name only
-     * for one-off devices. At most PAIRBLE_NAME_MAX_LEN characters of A-Z,
-     * a-z, 0-9, '-' and '_': it is also a Wi-Fi network name and part of a URL. */
-    const char *name;
-
-    /* NULL = CONFIG_PAIRBLE_NAME_PREFIX ("PAIRBLE-"). At most 23 characters,
-     * leaving room for the six-character MAC suffix. */
-    const char *name_prefix;
-
-    /* Proof of possession: the secret on the label, mixed into the session key.
-     * NULL (the default) reads it from NVS, where @pairble/cli puts a unique one
-     * per unit, and if there is none generates one on first boot and stores it
-     * (unless CONFIG_PAIRBLE_POP_GENERATE is off). A string set here is the same
-     * on every unit built from this firmware: fine for a one-off, not for a
-     * product. 8-63 characters of A-Z, a-z, 0-9 and ._~- */
-    const char *pop;
-
-    /* Also offer setup over the device's own Wi-Fi network, at the same time
-     * as BLE, for phones that cannot use Bluetooth. Its name is the device
-     * name and its WPA2 password the PoP. Default CONFIG_PAIRBLE_SOFTAP. */
-    bool softap;
-
-    uint32_t window_seconds;   /* first-time setup; 0 = stay open until provisioned */
-    bool reboot_after_success;
-
-    /* Offline this long, setup reopens by itself; 0 = never. Default
-     * CONFIG_PAIRBLE_RECOVERY_AFTER_SECONDS (120). */
-    uint32_t recovery_after_seconds;
-    /* How long reopened setup stays open. Default
-     * CONFIG_PAIRBLE_RECOVERY_WINDOW_SECONDS (600). */
-    uint32_t recovery_window_seconds;
-
-    pairble_event_cb_t event_cb;
-    void *user_ctx;
-} pairble_config_t;
-
-#if CONFIG_PAIRBLE_SOFTAP  /* #if, not #ifdef: -D CONFIG_PAIRBLE_SOFTAP=0 must turn it off */
-#  define PAIRBLE_DEFAULT_SOFTAP true
 #else
-#  define PAIRBLE_DEFAULT_SOFTAP false
+#  error "pairble supports ESP32 boards (arduino-esp32 3.3 or newer) and the Raspberry Pi Pico W / Pico 2 W (arduino-pico)"
 #endif
-
-#if CONFIG_PAIRBLE_REBOOT_AFTER_SUCCESS
-#  define PAIRBLE_DEFAULT_REBOOT true
-#else
-#  define PAIRBLE_DEFAULT_REBOOT false
-#endif
-
-#define PAIRBLE_CONFIG_DEFAULT()                                  \
-    {                                                             \
-        .name                 = NULL,                             \
-        .name_prefix          = NULL,                             \
-        .pop                  = NULL,                             \
-        .softap               = PAIRBLE_DEFAULT_SOFTAP,          \
-        .window_seconds       = CONFIG_PAIRBLE_WINDOW_SECONDS,   \
-        .reboot_after_success = PAIRBLE_DEFAULT_REBOOT,          \
-        .recovery_after_seconds  = CONFIG_PAIRBLE_RECOVERY_AFTER_SECONDS,  \
-        .recovery_window_seconds = CONFIG_PAIRBLE_RECOVERY_WINDOW_SECONDS, \
-        .event_cb             = NULL,                            \
-        .user_ctx             = NULL,                            \
-    }
-
-/**
- * Brings the device online: connects with stored credentials if there are
- * any, otherwise opens setup over BLE. `config` may be NULL.
- *
- * Takes care of NVS, networking, the default event loop and Wi-Fi if the
- * application has not already, and leaves them alone if it has - so it works
- * both as the first line of app_main and inside an existing application.
- * Call it before the application starts Wi-Fi or Bluetooth itself: from
- * then on pairble owns the station connection and reconnects it whenever it
- * drops, an esp_wifi_disconnect() by the application included. To switch
- * Wi-Fi off on purpose - before deep sleep, say - call esp_wifi_stop(): that
- * is not counted as time offline, so a battery device that sleeps between
- * readings never reopens setup because of its own sleep. Time offline does
- * add up across wake-ups, but setup only reopens during one that lasts at
- * least ten seconds: a device that sleeps again sooner should stay awake
- * for a while when it has been offline long (or call pairble_open_setup()).
- *
- * First-time setup that closes after window_seconds with nothing set leaves
- * the device idle until the button, power cycles or pairble_open_setup().
- */
-esp_err_t pairble_start(const pairble_config_t *config);
-
-/** What goes into the QR code: the setup page, with this unit's name and
- *  proof of possession in the URL fragment, which never reaches a server.
- *  Valid after pairble_start(). Print it, or draw it on a display. */
-const char *pairble_setup_url(void);
-
-/** The second, smaller QR code for the SoftAP fallback: scanning it joins the
- *  device's own network, e.g. "WIFI:S:PAIRBLE-BA6550;T:WPA;P:K3F9Q2M7ZX4P;;".
- *  NULL when the fallback is off. Valid after pairble_start(). */
-const char *pairble_wifi_qr(void);
-
-/** The advertised name, e.g. "PAIRBLE-BA6550". Valid after pairble_start(). */
-const char *pairble_device_name(void);
-
-/** True if Wi-Fi credentials are stored. Valid after pairble_start(). */
-bool pairble_is_provisioned(void);
-
-/** True while setup is open (BLE advertising, SoftAP up). A battery device
- *  should not go to deep sleep while it is. */
-bool pairble_is_setup_open(void);
-
-/** True while the station has an IP address. */
-bool pairble_is_online(void);
-
-/** Opens setup again on a provisioned device, for the application's own
- *  button or menu ("change Wi-Fi network"). The device stays on the stored
- *  network until a phone connects to set it up, falls back to it if the
- *  phone leaves or the new network fails, and replaces it only once the new
- *  one works. Setup closes when a phone has set a network, or after
- *  recovery_window_seconds.
- *
- *  (Setup that reopens by itself after CONFIG_PAIRBLE_RECOVERY_AFTER_SECONDS
- *  offline differs in one way: it also closes as soon as the stored network
- *  answers again.)
- *
- *  Returns at once; ESP_OK if setup is already open. With
- *  CONFIG_PAIRBLE_BT_MEMORY_RELEASE_ALL this restarts the device into setup
- *  instead, and does not return. */
-esp_err_t pairble_open_setup(void);
-
-/** Hands setup a network from somewhere other than a phone - a serial
- *  protocol such as Improv, a keypad, the application's own menu. It is
- *  treated exactly like one a phone sent: the stored network stays until this
- *  one works, a failure is reported (PAIRBLE_EVENT_FAILED and its reason)
- *  and another can be tried, success replaces the stored network and, with
- *  reboot_after_success, restarts the device.
- *
- *  Setup must be open (see pairble_is_setup_open()). `password` may be NULL
- *  or "" for an open network.
- *
- *  With `timeout_ms` 0 it returns at once: ESP_OK means the attempt started.
- *  Otherwise it waits for the outcome - ESP_OK once the device is on the new
- *  network, ESP_ERR_WIFI_PASSWORD or ESP_ERR_WIFI_SSID when it failed,
- *  ESP_ERR_TIMEOUT - so call it from an application task, never from an
- *  event handler. ESP_ERR_INVALID_STATE: setup is not open, or an attempt is
- *  already running. */
-esp_err_t pairble_set_network(const char *ssid, const char *password, uint32_t timeout_ms);
-
-/** Writes bytes to the serial port Improv runs on. Called from pairble's own
- *  task. */
-typedef void (*pairble_improv_write_t)(const uint8_t *data, size_t len, void *ctx);
-
-/** Improv Wi-Fi over serial (https://www.improv-wifi.com/serial/): the ESP
- *  Web Tools installer, improv-wifi.com and Home Assistant can then set the
- *  network over USB. The network goes through pairble_set_network(), so the
- *  stored one stays until the new one works.
- *
- *  The application reads the port and hands every byte to
- *  pairble_improv_input() (log lines on the same port are fine); replies go
- *  to `write`. `url` is offered to open once online, "{ip}" standing for the
- *  device's address (e.g. "http://{ip}/"); NULL for none.
- *  CONFIG_PAIRBLE_IMPROV_UART does all of this on a UART by itself, and the
- *  Arduino library has pairbleImprovSerial(Serial).
- *
- *  The serial port has no security of its own: whoever holds the cable holds
- *  the device. */
-esp_err_t pairble_improv_start(pairble_improv_write_t write, void *ctx, const char *url);
-
-/** The firmware name and version Improv reports. By default the app
- *  description's (PROJECT_NAME and PROJECT_VER) - which under Arduino are
- *  the core's, so set them there. */
-void pairble_improv_set_firmware(const char *name, const char *version);
-
-/** Bytes received on Improv's serial port. Call from one task only. */
-void pairble_improv_input(const uint8_t *data, size_t len);
-
-/** Closes setup early and frees its RAM. */
-esp_err_t pairble_stop(void);
-
-/** Factory reset for Wi-Fi: wipes the stored network (not the proof of
- *  possession). Restart afterwards. To let someone change networks, prefer
- *  pairble_open_setup(), which erases nothing until the new one works. */
-esp_err_t pairble_reset_credentials(void);
-
-#ifdef __cplusplus
-}
-#endif
-
-#if defined(__cplusplus) && defined(ARDUINO)
-class Stream;
-/** Arduino: Improv Wi-Fi over this serial port (see pairble_improv_start()),
- *  read and answered in the background. Call after Serial.begin() and
- *  pairble_start(). `url` as for pairble_improv_start(); `firmware` and
- *  `version` are what the installer shows. */
-void pairbleImprovSerial(Stream &serial, const char *url = nullptr, const char *firmware = nullptr,
-                         const char *version = nullptr);
-#endif
-

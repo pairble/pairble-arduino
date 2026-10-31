@@ -1,3 +1,4 @@
+#if defined(ESP_PLATFORM)  /* pairble: this architecture only (arduino/build.sh) */
 /*
  * SoftAP fallback: the device's own Wi-Fi network, offered at the same time as
  * BLE, for phones that cannot use Bluetooth - an iPhone with no internet to
@@ -402,3 +403,5 @@ void pairble_softap_stop(void)
     }
 #endif
 }
+
+#endif

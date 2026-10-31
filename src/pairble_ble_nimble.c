@@ -1,3 +1,4 @@
+#if defined(ESP_PLATFORM)  /* pairble: this architecture only (arduino/build.sh) */
 /* protocomm's BLE transport on NimBLE-Arduino, for every chip under Arduino
  * (see arduino/build.sh). ESP-IDF b774170ff46, components/protocomm/
  * src/transports/protocomm_nimble.c, Apache-2.0, with NimBLE-Arduino's include
@@ -1298,3 +1299,5 @@ esp_err_t protocomm_ble_stop(protocomm_t *pc)
     }
     return ret;
 }
+
+#endif

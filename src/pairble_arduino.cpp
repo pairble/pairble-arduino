@@ -1,3 +1,4 @@
+#if defined(ESP_PLATFORM)  /* pairble: this architecture only (arduino/build.sh) */
 /*
  * pairble for Arduino: glue.
  *
@@ -96,3 +97,5 @@ void pairbleImprovSerial(Stream &serial, const char *url, const char *firmware, 
   if (pairble_improv_start(improvWrite, &serial, url) == ESP_OK)
     xTaskCreate(improvReader, "pairble_serial", 2560, &serial, 4, nullptr);
 }
+
+#endif

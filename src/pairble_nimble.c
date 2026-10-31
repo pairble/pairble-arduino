@@ -1,3 +1,4 @@
+#if defined(ESP_PLATFORM)  /* pairble: this architecture only (arduino/build.sh) */
 /*
  * pairble for Arduino: starting and stopping NimBLE-Arduino's host.
  *
@@ -141,3 +142,5 @@ int pairble_nimble_port_stop(void)
     ble_npl_event_deinit(&s_quit_ev);
     return 0;
 }
+
+#endif

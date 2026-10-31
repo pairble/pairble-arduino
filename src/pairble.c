@@ -1,3 +1,4 @@
+#if defined(ESP_PLATFORM)  /* pairble: this architecture only (arduino/build.sh) */
 /*
  * pairble - Wi-Fi provisioning for ESP32 over BLE with no app to install
  *
@@ -46,11 +47,8 @@
 #include "pairble_internal.h"
 #include "pairble_text.h"
 #if CONFIG_PAIRBLE_BLE_IDLE_TIMEOUT_SECONDS > 0
-#if __has_include("nimble/nimble/host/include/host/ble_gap.h")
+#include "nimconfig.h"
 #include "nimble/nimble/host/include/host/ble_gap.h"  /* the Arduino library: NimBLE-Arduino's host */
-#else
-#include "host/ble_gap.h"
-#endif
 #endif
 
 static const char *TAG = PAIRBLE_TAG;
@@ -1272,3 +1270,5 @@ esp_err_t pairble_reset_credentials(void)
     }
     return esp_wifi_restore();
 }
+
+#endif

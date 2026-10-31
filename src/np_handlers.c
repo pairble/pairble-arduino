@@ -1,3 +1,4 @@
+#if defined(ESP_PLATFORM)  /* pairble: this architecture only (arduino/build.sh) */
 /*
  * SPDX-FileCopyrightText: 2019-2025 Espressif Systems (Shanghai) CO LTD
  *
@@ -408,3 +409,5 @@ esp_err_t get_network_ctrl_handlers(network_ctrl_handlers_t *ptr)
 #endif
     return ESP_OK;
 }
+
+#endif

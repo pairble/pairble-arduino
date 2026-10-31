@@ -1,3 +1,4 @@
+#if defined(ESP_PLATFORM)  /* pairble: this architecture only (arduino/build.sh) */
 /*
  * SPDX-FileCopyrightText: 2019-2024 Espressif Systems (Shanghai) CO LTD
  *
@@ -186,3 +187,5 @@ const network_prov_scheme_t network_prov_scheme_softap = {
     .wifi_mode           = WIFI_MODE_APSTA
 #endif
 };
+
+#endif

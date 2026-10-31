@@ -1,3 +1,4 @@
+#if defined(ESP_PLATFORM)  /* pairble: this architecture only (arduino/build.sh) */
 /*
  * Improv Wi-Fi over serial (https://www.improv-wifi.com/serial/): the ESP Web
  * Tools installer, improv-wifi.com and Home Assistant can set the network
@@ -280,5 +281,7 @@ esp_err_t pairble_improv_uart_start(void)
     ESP_LOGI(TAG, "Improv Wi-Fi on UART %d", port);
     return ESP_OK;
 }
+
+#endif
 
 #endif

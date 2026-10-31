@@ -1,3 +1,4 @@
+#if defined(ESP_PLATFORM)  /* pairble: this architecture only (arduino/build.sh) */
 /*
  * SPDX-FileCopyrightText: 2018-2025 Espressif Systems (Shanghai) CO LTD
  *
@@ -544,3 +545,5 @@ exit:
     network_prov_config_command_cleanup(&resp, priv_data);
     return ret;
 }
+
+#endif

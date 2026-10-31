@@ -1,3 +1,4 @@
+#if defined(ESP_PLATFORM)  /* pairble: this architecture only (arduino/build.sh) */
 /*
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -82,3 +83,5 @@ esp_err_t pairble_nvs_erase(const char *key)
     nvs_close(handle);
     return err == ESP_ERR_NVS_NOT_FOUND ? ESP_OK : err;
 }
+
+#endif
